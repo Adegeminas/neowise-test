@@ -8,7 +8,11 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    .notice { padding: .75rem 1rem; border-radius: .4rem; margin: 1rem 0; }
+    .notice[data-kind="manual"] { background: #fff4e5; border: 1px solid #f0b46a; }
+    .notice[data-kind="invalid"] { background: #fdecec; border: 1px solid #e59a9a; }
+    .notice[data-kind="loading"] { color: #555; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -18,18 +22,62 @@
     <textarea id="message" rows="4"></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+  <section id="result" hidden>
+    <p><strong>Тема:</strong> <span id="topic"></span></p>
+    <label for="draft"><strong>Черновик ответа</strong> (проверьте перед отправкой клиенту)</label>
+    <textarea id="draft" rows="6"></textarea>
+  </section>
+
   <script type="module">
+    import { viewFor, loadingView } from "/ui.mjs";
+
+    const CLIENT_TIMEOUT_MS = 5000;
     const form = document.querySelector("form");
+    const message = document.querySelector("#message");
+    const button = form.querySelector("button");
+    const notice = document.querySelector("#notice");
     const result = document.querySelector("#result");
+    const topic = document.querySelector("#topic");
+    const draft = document.querySelector("#draft");
+
+    let latestRequest = 0;
+
+    function render(view) {
+      notice.dataset.kind = view.kind;
+      notice.textContent = view.message;
+      notice.hidden = !view.message;
+      // Черновик и тема всегда перезаписываются: старые данные не остаются на экране.
+      topic.textContent = view.topic ?? "";
+      draft.value = view.draft ?? "";
+      result.hidden = view.kind !== "ready";
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const requestId = ++latestRequest;
+      render(loadingView()); // сразу убираем предыдущий черновик
+      button.disabled = true;
+
+      let view;
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: message.value }),
+          signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+        });
+        const body = await reply.json().catch(() => null);
+        view = viewFor(reply.status, body);
+      } catch {
+        view = viewFor(0, null); // сеть недоступна или клиентский таймаут: ручной разбор
+      }
+
+      if (requestId !== latestRequest) return; // пришёл ответ на устаревший запрос
+      button.disabled = false;
+      render(view);
     });
   </script>
 </body>
